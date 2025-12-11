@@ -1,5 +1,5 @@
 import pandas as pd
-from collections import defaultdict
+from collections import defaultdict, deque
 
 
 class Airport:
@@ -30,16 +30,6 @@ class Airport:
         A list of Route objects representing all incoming routes (destinations → this airport).
     out_routes : list of Route
         A list of Route objects representing all outgoing routes (this airport → destinations).
-
-    degree_in : int or None
-        Number of inbound edges; computed later (optional).
-    degree_out : int or None
-        Number of outbound edges; computed later.
-    betweenness : float or None
-        Betweenness centrality value assigned later through network analysis.
-    resilience_score : float or None
-        Optional metric used to represent how robust this airport is in the 
-        face of route disruptions or network fragmentation.
     """
     def __init__(self, code, name, city, country, lat, lon):
         self.code = code
@@ -50,16 +40,10 @@ class Airport:
         self.lon = lon
         self.out_routes = []
         self.in_routes = []
-        self.degree_in = None
-        self.degree_out = None
-        self.betweenness = None
-        self.resilience_score = None
-    
 
-    def dd_inbound_route(self, route):
+    def add_inbound_route(self, route):
         """Register a Route object as an inbound connection to this airport."""
         self.in_routes.append(route)
-
 
     def add_outbound_route(self, route):
         """Register a Route object as an outbound connection from this airport."""
@@ -84,27 +68,8 @@ class Route:
         IATA code of the destination airport.
     airline : str
         Airline code operating this route (e.g., "DL", "UA").
-    distance : float or None
-        Flight distance if available (optional). May be filled in later.
-
-    flight_count : int or None
-        Number of flights observed in the BTS dataset for this route.
-    avg_delay : float or None
-        Average departure delay (in minutes) for the route.
-    cancel_rate : float or None
-        Proportion of flights canceled on this route.
-    weather_cancel_rate : float or None
-        Optional metric if weather-specific cancellations are incorporated.
-
-    weight : float or None
-        A scalar used for pathfinding or optimization; may combine distance,
-        delay, or cancellation metrics depending on the analysis design.
-    is_high_risk : bool
-        Whether the route is considered high-risk (e.g., cancel_rate > threshold).
-    active : bool
-        Whether this route is “active” in the network (used during simulation).
     """
-    def __init__(self, src, dst, airline, distance=None):
+    def __init__(self, src, dst, airline):
         self.src = src
         self.dst = dst
         self.airline = airline
@@ -133,30 +98,23 @@ class FlightNetwork:
 
     Methods
     -------
-    add_airport(airport):
+    load_airport(airport):
         Inserts an Airport object into the network.
 
-    add_route(route):
+    load_route(route):
         Inserts a Route object into the network and updates inbound/outbound lists.
 
+    build_adjacency():
+
+        
     build_from_openflights(airports_csv, routes_csv, airlines_csv=None):
         Constructs Airport and Route objects directly from OpenFlights CSV files.
 
-    load_bts_statistics(bts_df):
-        Integrates aggregated BTS flight-level statistics into corresponding Route objects.
+    summarize_airport(code):
 
-    get_neighbors(airport_code):
-        Returns all outbound neighbors of a given airport.
-
-    find_path_bfs(start, end):
-        Computes the shortest path (in number of hops) between two airports.
-
-    simulate_disruption(threshold):
-        Deactivates routes whose cancel_rate exceeds a threshold and recomputes 
-        network connectivity or resilience metrics.
-
-    compute_centrality():
-        Computes degree-based or network-centrality metrics for all airports.
+    
+    get_airport(code):
+    
     """
     def __init__(self):
         self.airports = {}
@@ -188,6 +146,7 @@ class FlightNetwork:
 
         print("nodes (airports):", len(self.airports))
 
+
     def load_routes(self, routes_csv):
         """
         Load routes from CSV and create Route objects.
@@ -211,12 +170,17 @@ class FlightNetwork:
             dst = row["Destination Airport"]
             airline = row["Airline"]
 
-            # 確保兩邊都在 airports_dict 裡
             if src in self.airports and dst in self.airports:
                 key = (src, dst, airline)
                 if key not in self.routes:
                     route = Route(src, dst, airline)
                     self.routes[key] = route
+
+                    src_airport = self.airports[src]
+                    dst_airport = self.airports[dst]
+
+                    src_airport.add_outbound_route(route)
+                    dst_airport.add_inbound_route(route)
 
         print("routes:", len(self.routes))
 
@@ -224,14 +188,172 @@ class FlightNetwork:
     def build_adjacency(self):
         self.adjacency = defaultdict(set)
         for route in self.routes.values():
-            if route.active:
-                self.adjacency[route.src].add(route.dst)
+            self.adjacency[route.src].add(route.dst)
 
 
     def build_from_openflights(self, airports_csv, routes_csv, airlines_csv = None):
         self.load_airports(airports_csv)
         self.load_routes(routes_csv)
         self.build_adjacency()
+
+
+    def summarize_airport(self, code):
+        """
+        Return a human-readable summary for an airport code.
+        Includes basic airport info + number of routes + sample destinations.
+
+        Parameters
+        ----------
+        code : str
+            IATA code, e.g. "LAX", "DTW".
+
+        Returns
+        -------
+        str or None
+            Summary text, or None if airport not found.
+        """
+
+        airport = self.get_airport(code)
+        if airport is None:
+            return None
+
+        # Out going route (from adjacency)
+        outgoing = self.adjacency.get(code, set())
+
+        dest_names = []
+        for dst_id in list(outgoing)[:5]:
+            if dst_id in self.airports:
+                dest_names.append(self.airports[dst_id].name)
+
+        summary = (
+            f"Airport: {airport.name} ({airport.code})\n"
+            f"City: {airport.city}, Country: {airport.country}\n"
+            f"Latitude, Longtitude: {airport.lat}, {airport.lon}\n"
+            f"Code: {airport.code}\n"
+            f"Total outgoing routes: {len(outgoing)}\n"
+            f"Sample destinations: {', '.join(dest_names) if dest_names else 'None'}"
+        )
+
+        return summary
+
+
+    def get_airport(self, code):
+        """
+        Safely retrieve an Airport object by its IATA code.
+
+        Parameters
+        ----------
+        code : str
+            The IATA airport code (e.g., "LAX", "DTW").
+
+        Returns
+        -------
+        Airport or None
+            The Airport object if found, otherwise None.
+        """
+        if code is None:
+            return None
+
+        norm_code = code.strip().upper()
+
+        return self.airports.get(norm_code, None)
+    
+
+    def find_shortest_path_bfs(self, src_code: str, dst_code: str) -> list[str] | None:
+        """
+        Find the shortest path (in number of hops) between two airports
+        using Breadth-First Search (BFS).
+
+        Parameters
+        ----------
+        src_code : str
+            IATA code for the source airport, e.g. "LAX".
+        dst_code : str
+            IATA code for the destination airport, e.g. "DTW".
+
+        Returns
+        -------
+        list[str] or None
+            A list of IATA codes representing the path from source to
+            destination (inclusive), or None if no path is found.
+        """
+        if src_code is None or dst_code is None:
+            return None
+
+        src = src_code.strip().upper()
+        dst = dst_code.strip().upper()
+
+        if self.get_airport(src) is None or self.get_airport(dst) is None:
+            return None
+
+        if src == dst:
+            return [src]
+
+        visited = set()
+        parent: dict[str, str] = {}
+        q = deque()
+
+        visited.add(src)
+        q.append(src)
+
+        found = False
+
+        while q:
+            current = q.popleft()
+            for neighbor in self.adjacency.get(current, set()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    parent[neighbor] = current
+                    if neighbor == dst:
+                        found = True
+                        q.append(neighbor)
+                        break
+                    q.append(neighbor)
+            if found:
+                break
+
+        if not found:
+            return None
+
+        path = [dst]
+        while path[-1] != src:
+            prev = parent[path[-1]]
+            path.append(prev)
+
+        path.reverse()
+        return path
+
+
+    def format_path(self, path: list[str] | None) -> str:
+        """
+        Format a path (list of IATA codes) into a human-readable string.
+
+        Parameters
+        ----------
+        path : list[str] or None
+            Path returned by find_shortest_path_bfs.
+
+        Returns
+        -------
+        str
+        """
+        if not path:
+            return "No path found."
+
+        lines = []
+        lines.append(f"Path length (hops): {len(path) - 1}")
+        segments = []
+
+        for code in path:
+            airport = self.get_airport(code)
+            if airport is not None:
+                segments.append(f"{code} ({airport.city}, {airport.country})")
+            else:
+                segments.append(code)
+
+        lines.append(" -> ".join(segments))
+        return "\n".join(lines)
+
 
 
 if __name__ == "__main__":
