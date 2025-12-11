@@ -1,5 +1,8 @@
 import pandas as pd
 from collections import defaultdict, deque
+import networkx as nx
+import matplotlib.pyplot as plt
+
 
 
 class Airport:
@@ -95,26 +98,6 @@ class FlightNetwork:
     adjacency : dict[str, set[str]]
         A simpler adjacency list (src → set of dst airport codes) used for BFS, 
         pathfinding, or unweighted analysis.
-
-    Methods
-    -------
-    load_airport(airport):
-        Inserts an Airport object into the network.
-
-    load_route(route):
-        Inserts a Route object into the network and updates inbound/outbound lists.
-
-    build_adjacency():
-
-        
-    build_from_openflights(airports_csv, routes_csv, airlines_csv=None):
-        Constructs Airport and Route objects directly from OpenFlights CSV files.
-
-    summarize_airport(code):
-
-    
-    get_airport(code):
-    
     """
     def __init__(self):
         self.airports = {}
@@ -353,6 +336,121 @@ class FlightNetwork:
 
         lines.append(" -> ".join(segments))
         return "\n".join(lines)
+
+
+    def plot_path(self, path: list[str] | None, figsize: tuple[int, int] = (8, 6)) -> None:
+        """
+        Visualize a path using NetworkX and matplotlib.
+
+        The path is drawn as a small directed graph. If latitude and longitude
+        are available, they are used as the layout coordinates.
+
+        Parameters
+        ----------
+        path : list[str] or None
+            Path returned by find_shortest_path_bfs.
+        figsize : tuple[int, int]
+            Figure size for matplotlib.
+        """
+        if not path or len(path) < 2:
+            print("No valid path to plot.")
+            return
+
+        G = nx.DiGraph()
+
+        for code in path:
+            G.add_node(code)
+
+        for i in range(len(path) - 1):
+            src = path[i]
+            dst = path[i + 1]
+            G.add_edge(src, dst)
+
+        pos = {}
+        for code in path:
+            airport = self.get_airport(code)
+            if airport is not None and airport.lat is not None and airport.lon is not None:
+                pos[code] = (airport.lon, airport.lat)
+
+        if len(pos) != len(path):
+            pos = nx.spring_layout(G, seed=42)
+
+        plt.figure(figsize=figsize)
+        nx.draw_networkx_nodes(G, pos, node_size=500)
+        nx.draw_networkx_edges(G, pos, arrowstyle="->", arrowsize=15)
+        nx.draw_networkx_labels(G, pos, font_size=8)
+
+        plt.title("Shortest Path between Airports")
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    def plot_hub_network(self, top_n: int = 50, figsize: tuple[int, int] = (10, 8)) -> None:
+        """
+        Visualize a subnetwork consisting of the top-N airports by outbound degree.
+
+        Nodes:
+            Top-N airports with the most outbound routes.
+        Edges:
+            Routes where BOTH source and destination are in the top-N set.
+
+        Parameters
+        ----------
+        top_n : int
+            Number of highest-degree airports to include in the subgraph.
+        figsize : tuple[int, int]
+            Size of the matplotlib figure.
+        """
+        degree_out = {code: len(self.adjacency.get(code, set()))
+                      for code in self.airports.keys()}
+
+        top_codes = sorted(degree_out, key=degree_out.get, reverse=True)[:top_n]
+
+        G = nx.DiGraph()
+        for code in top_codes:
+            G.add_node(code)
+
+        for (src, dst, airline), route in self.routes.items():
+            if src in top_codes and dst in top_codes:
+                G.add_edge(src, dst)
+
+        if G.number_of_nodes() == 0:
+            print("No nodes to plot in hub network.")
+            return
+
+        pos = nx.spring_layout(G, k=0.3, iterations=100, seed=42)
+
+        node_sizes = [50 + degree_out.get(code, 0) * 2 for code in G.nodes()]
+
+        plt.figure(figsize=figsize)
+
+        nx.draw_networkx_nodes(
+            G, pos,
+            node_size=node_sizes,
+            node_color="#1f78b4",
+            edgecolors="black",
+            alpha=0.9,
+        )
+
+        nx.draw_networkx_edges(
+            G, pos,
+            arrowstyle="->",
+            arrowsize=10,
+            width=0.5,
+            alpha=0.5,
+        )
+
+        nx.draw_networkx_labels(
+            G, pos,
+            font_size=8,
+            font_color="white",
+            font_weight="bold",
+        )
+
+        plt.title(f"Top {top_n} Airport Hubs (by outbound routes)", fontsize=14)
+        plt.axis("off")
+        plt.tight_layout()
+        plt.show()
 
 
 
